@@ -1,5 +1,5 @@
 Package: multicore
-Version: 0.1-4
+Version: 0.1-5
 Title: Parallel processing of R code on machines with multiple cores or
         CPUs
 Author: Simon Urbanek <Simon.Urbanek@r-project.org>
@@ -16,4 +16,4 @@ SystemRequirements: POSIX-compliant OS (essentially anything but
 OS_type: unix
 URL: http://www.rforge.net/multicore/
 Repository: CRAN
-Date/Publication: 2011-02-12 13:30:39
+Date/Publication: 2011-03-10 11:14:40
