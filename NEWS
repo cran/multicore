@@ -1,6 +1,32 @@
  NEWS/ChangeLog for multicore
 ------------------------------
 
+0.1-2	2009-01-09
+    o	added mc.preschedule parameter to mclappy() which (if FALSE)
+	allows on-demand distribution of FUN calls across cores.
+
+    o	added "silent" parmeter to parallel() and mclapply()
+	suppressing output on stdout in child processes
+
+    o	added internal functions closeStdout(), closeStrerr(),
+	closeFD(), closeAll(), isChild(), childrenDescriptors() and
+	masterDescriptor()
+
+    o	selectChildren() implicitly checks for and removes zombies
+
+    o	removed spurious debugging output in mclapply()
+
+    o	fixed cases in which mclapply() would not preserve names
+
+    o	fixed child list management
+
+    o	in order to make sure that children cannot die before the
+	master can collect results, children will specifically wait
+	for the master to allow them to exit (SIGUSR1 is used for this
+	purpose, so don't use it directly unless you want a child to
+	exit even if the master didn't release it).
+
+
 0.1-1	2009-01-03
     o	added name parameter to parallel(), accordingly collect()
 	names the results if the job name is present

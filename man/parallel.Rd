@@ -1,16 +1,23 @@
 \name{parallel}
 \alias{parallel}
 \alias{collect}
+\alias{mcparallel}
 \title{
   Evaluate an expression asynchronously in a separate process
 }
 \description{
   \code{parallel} starts a parallel process which evaluates the given expression.
 
+  \code{mcparallel} is a synonym for \code{parallel} that can be used
+  at top level if \code{parallel} is masked by other packages. It
+  should not be used in other packages since it's just a shortcut for
+  importing \code{multicore::parallel}.
+
   \code{collect} collects results from parallel processes.
 }
 \usage{
-parallel(expr, name, mc.set.seed = FALSE)
+parallel(expr, name, mc.set.seed = FALSE, silent = FALSE)
+mcparallel(expr, name, mc.set.seed = FALSE, silent = FALSE)
 collect(jobs, wait = TRUE, timeout = 0, intermediate = FALSE)
 }
 \arguments{
@@ -20,6 +27,8 @@ devices or GUI elements in this code)}
 \item{mc.set.seed}{if set to \code{TRUE} then the random number
 generator is seeded such that it is different from any other
 process. Otherwise it will be the same as in the current R session.}
+\item{silent}{if set to \code{TRUE} then all output on stdout will be
+suppressed (stderr is not affected).}
 \item{jobs}{list of jobs (or a single job) to collect results
 for. Alternatively \code{jobs} can also be an integer vector of
 process IDs. If omitted \code{collect} will wait for all currently

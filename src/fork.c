@@ -38,25 +38,36 @@ static int rm_child_(int pid) {
 #endif
 	while (ci) {
 		if (ci->pid == pid) {
-			if (!prev) {
-				if (ci->next) {
-					children.pid = ci->next->pid;
-					children.pfd = ci->next->pfd;
-					children.next = ci->next->next;
-				} else {
+			/* make sure we close all descriptors */
+			if (ci->pfd > 0) { close(ci->pfd); ci->pfd = -1; }
+			if (ci->sifd > 0) { close(ci->sifd); ci->sifd = -1; }
+			/* now remove it from the list */
+			if (!prev) { /* ci is actually children */
+				if (ci->next) { /* there is a next? copy it into children */
+					child_info_t *next0 = ci->next;					
+					children = *next0;
+					free(next0);
+				} else { /* there is no next? reset everything */
 					children.pid = 0;
-					children.pfd = 0;
+					children.sifd = -1;
+					children.pfd = -1;
 					children.next = 0;
 				}
+				last_child = &children;
 			} else {
 				prev->next = ci->next;
+				if (last_child == ci) last_child = prev;
 				free(ci);
-				return 1;
 			}
+			kill(pid, SIGUSR1); /* send USR1 to the child to make sure it exits */
+			return 1;
 		}
 		prev = ci;
 		ci = ci->next;
 	}
+#ifdef MC_DEBUG
+	Dprintf("WARNING: child %d was to be removed but it doesn't exist\n", pid);
+#endif
 	return 0;
 }
 
@@ -66,6 +77,22 @@ static int rm_child_(int pid) {
 #ifndef STDOUT_FILENO
 #define STDOUT_FILENO 1
 #endif
+#ifndef STDERR_FILENO
+#define STDERR_FILENO 2
+#endif
+
+static int child_can_exit = 0, child_exit_status = -1;
+
+static void child_sig_handler(int sig) {
+	if (sig == SIGUSR1) {
+#ifdef MC_DEBUG
+		Dprintf("child process %d got SIGUSR1; child_exit_status=%d\n", getpid(), child_exit_status);
+#endif
+		child_can_exit = 1;
+		if (child_exit_status >= 0)
+			exit(child_exit_status);
+	}
+}
 
 SEXP mc_fork() {
 	int pipefd[2];
@@ -74,9 +101,16 @@ SEXP mc_fork() {
 	SEXP res = allocVector(INTSXP, 3);
 	int *res_i = INTEGER(res);
 	if (pipe(pipefd)) error("Unable to create a pipe.");
-	if (pipe(sipfd)) error("Unable to create a pipe.");
+	if (pipe(sipfd)) {
+		close(pipefd[0]); close(pipefd[1]);
+		error("Unable to create a pipe.");
+	}
 	pid = fork();
-	if (pid == -1) error("Unable to fork.");
+	if (pid == -1) {
+		close(pipefd[0]); close(pipefd[1]);
+		close(sipfd[0]); close(sipfd[1]);
+		error("Unable to fork.");
+	}
 	res_i[0] = (int) pid;
 	if (pid == 0) { /* child */
 		close(pipefd[0]); /* close read end */
@@ -85,30 +119,10 @@ SEXP mc_fork() {
 		/* re-map stdin */
 		dup2(sipfd[0], STDIN_FILENO);
 		close(sipfd[0]);
-#if 0
-		/* remap stdin/out/err */
-		{
-			int pfd[2];
-			pipe(pfd);
-			dup2(pfd[1], STDOUT_FILENO);
-			close(pfd[1]);
-			// stdoutFD=pfd[0];
-		}
-		{
-			int pfd[2];
-			pipe(pfd);
-			dup2(pfd[1], STDERR_FILENO);
-			close(pfd[1]);
-			// stderrFD=pfd[0];
-		}
-		{
-			int pfd[2];
-			pipe(pfd);
-			dup2(pfd[0], STDIN_FILENO);
-			close(pfd[0]);
-			// stdinFD=pfd[1];
-		}
-#endif
+		/* master uses USR1 to signal that the child process can terminate */
+		child_exit_status = -1;
+		child_can_exit = 0;
+		signal(SIGUSR1, child_sig_handler);
 #ifdef MC_DEBUG
 		Dprintf("child process %d started\n", getpid());
 #endif
@@ -122,7 +136,7 @@ SEXP mc_fork() {
 #ifdef MC_DEBUG
 		Dprintf("parent registers new child %d\n", pid);
 #endif
-		/* register the new child and its pipe */
+		/* register the new child and its pipes */
 		if (children.pid == 0)
 			ci = &children;
 		else
@@ -139,6 +153,21 @@ SEXP mc_fork() {
 
 SEXP close_stdout() {
 	close(STDOUT_FILENO);
+	return R_NilValue;
+}
+
+SEXP close_stderr() {
+	close(STDERR_FILENO);
+	return R_NilValue;
+}
+
+SEXP close_fds(SEXP sFDS) {
+	int *fd, fds, i = 0;
+	if (TYPEOF(sFDS) != INTSXP) error("descriptors must be integers");
+	fds = LENGTH(sFDS);
+	fd = INTEGER(sFDS);
+	while (i < fds) close(fd[i++]);
+	return ScalarLogical(1);
 }
 
 SEXP send_master(SEXP what) {
@@ -194,7 +223,7 @@ SEXP send_child_stdin(SEXP sPid, SEXP what) {
 }
 
 SEXP select_children(SEXP sTimeout, SEXP sWhich) {
-	int maxfd = 0, sr, wstat;
+	int maxfd = 0, sr, wstat, zombies = 0;
 	unsigned int wlen = 0, wcount = 0;
 	SEXP res;
 	int *res_i, *which = 0;
@@ -216,6 +245,7 @@ SEXP select_children(SEXP sTimeout, SEXP sWhich) {
 	while (waitpid(-1, &wstat, WNOHANG) > 0) {}; /* check for zombies */
 	FD_ZERO(&fs);
 	while (ci && ci->pid) {
+		if (ci->pfd == -1) zombies++;
 		if (ci->pfd > maxfd) maxfd = ci->pfd;
 		if (ci->pfd > 0) {
 			if (which) { /* check for the FD only if it's on the list */
@@ -227,8 +257,25 @@ SEXP select_children(SEXP sTimeout, SEXP sWhich) {
 		ci = ci -> next;
 	}
 #ifdef MC_DEBUG
-	Dprintf("select_children: maxfd=%d, wlen=%d, wcount=%d, timeout=%d:%d\n", maxfd, wlen, wcount, tv.tv_sec, tv.tv_usec);
+	Dprintf("select_children: maxfd=%d, wlen=%d, wcount=%d, zombies=%d, timeout=%d:%d\n", maxfd, wlen, wcount, zombies, tv.tv_sec, tv.tv_usec);
 #endif
+	if (zombies) { /* oops, this should never really hapen - it did while we had a bug in rm_child_ but hopefully not anymore */
+		while (zombies) { /* this is rather more complicated than it should be if we used pointers to delete, but well ... */
+			ci = &children;
+			while (ci) {
+				if (ci->pfd == -1) {
+#ifdef MC_DEBUG
+					Dprintf("detected zombie: pid=%d, pfd=%d, sifd=%d\n", ci->pid, ci->pfd, ci->sifd);
+#endif
+					rm_child_(ci->pid);
+					zombies--;
+					break;
+				}
+				ci = ci->next;
+			}
+			if (!ci) break;
+		}
+	}
 	if (maxfd == 0 || (wlen && !wcount)) return R_NilValue; /* NULL signifies no children to tend to */
 	sr = select(maxfd + 1, &fs, 0, 0, tvp);
 #ifdef MC_DEBUG
@@ -287,8 +334,11 @@ static SEXP read_child_ci(child_info_t *ci) {
 			Dprintf(" read_child_ci(%d) - read %d at %d returned %d\n", ci->pid, len-i, i, n);
 #endif
 			if (n < 1) {
+				int pid = ci->pid;
 				close(fd);
-				return ScalarInteger(ci->pid);
+				ci->pfd = -1;
+				rm_child_(pid);
+				return ScalarInteger(pid);
 			}
 			i += n;
 		}
@@ -393,6 +443,36 @@ SEXP mc_children() {
 	return res;
 }
 
+SEXP mc_fds(SEXP sFdi) {
+	int fdi = asInteger(sFdi);
+	unsigned int count = 0;
+	SEXP res;
+	child_info_t *ci = &children;
+	while (ci && ci->pid > 0) {
+		count++;
+		ci = ci->next;
+	}
+	res = allocVector(INTSXP, count);
+	if (count) {
+		int *fds = INTEGER(res);
+		ci = &children;
+		while (ci && ci->pid > 0) {
+			(fds++)[0] = (fdi == 0) ? ci->pfd : ci->sifd;
+			ci = ci->next;
+		}
+	}
+	return res;
+}
+
+
+SEXP mc_master_fd() {
+	return ScalarInteger(master_fd);
+}
+
+SEXP mc_is_child() {
+	return ScalarLogical(is_master?0:1);
+}
+
 SEXP mc_kill(SEXP sPid, SEXP sSig) {
 	int pid = asInteger(sPid);
 	int sig = asInteger(sSig);
@@ -410,7 +490,19 @@ SEXP mc_exit(SEXP sRes) {
 	if (master_fd != -1) { /* send 0 to signify that we're leaving */
 		unsigned int len = 0;
 		write(master_fd, &len, sizeof(len));
+		/* make sure the pipe is closed before we enter any waiting */
+		close(master_fd);
+		master_fd = -1;
 	}
+	if (!child_can_exit) {
+#ifdef MC_DEBUG
+		Dprintf("child %d is waiting for permission to exit\n", getpid());
+#endif
+		while (!child_can_exit) {
+			sleep(1);
+		}
+	}
+		
 #ifdef MC_DEBUG
 	Dprintf("child %d: exiting\n", getpid());
 #endif
