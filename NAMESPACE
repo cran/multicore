@@ -1,5 +1,11 @@
-exportPattern("^SIG")
-export(fork, readChild, readChildren, selectChildren, children, kill, exit, sendMaster, sendChildStdin, processID)
-export(mclapply, parallel, collect, mcparallel, pvec)
-S3method(print, process)
-useDynLib(multicore)
+
+importFrom(parallel, mclapply, pvec, mccollect, mcparallel)
+export(mclapply, pvec, mcparallel)
+
+export(children, collect, exit, fork, kill, parallel, processID)
+
+importFrom(tools, SIGCHLD, SIGHUP, SIGINT, SIGKILL,
+           SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2)
+export(SIGCHLD, SIGHUP, SIGINT, SIGKILL,
+       SIGQUIT, SIGSTOP, SIGTERM, SIGUSR1, SIGUSR2)
+
